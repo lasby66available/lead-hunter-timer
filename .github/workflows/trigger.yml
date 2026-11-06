@@ -24,8 +24,11 @@ on:
     - cron: '15 0 * * *'    # 北京 08:15 兜底
   workflow_dispatch:        # 手动测试 / 临时补发
 
+# contents: write 只用于最后的「保活提交」，作用域仅限这个公开空仓库。
+# GitHub 会在仓库连续 60 天无活动后自动禁用 schedule；每天写一行日期，
+# 就能保证定时任务不会被静默停掉。
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   trigger:
@@ -44,6 +47,7 @@ jobs:
           echo "UTC now=$(date -u +%H:%M:%S), waiting ${wait}s"
           if [ "$wait" -gt 0 ]; then sleep "$wait"; fi
 
+      # 按按钮放在最前面：准点优先，保活之类的杂事都排在它后面。
       - name: Dispatch private daily.yml
         env:
           DISPATCH_TOKEN: ${{ secrets.DISPATCH_TOKEN }}
@@ -62,3 +66,24 @@ jobs:
             exit 1
           fi
           echo "OK: daily.yml queued at $(date -u +%H:%M:%S) UTC"
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # 保活：一天最多一个 commit；即使失败也不影响上面已经完成的触发。
+      - name: Keep schedule alive
+        if: always()
+        continue-on-error: true
+        run: |
+          today=$(date -u +%Y-%m-%d)
+          if [ "$(cat LAST_RUN.txt 2>/dev/null)" = "${today}" ]; then
+            echo "repository already active today (${today})"
+            exit 0
+          fi
+          git config user.name "lead-hunter-timer[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          printf '%s\n' "${today}" > LAST_RUN.txt
+          git add LAST_RUN.txt
+          git commit -m "chore: keep schedule alive ${today}" || exit 0
+          git push
+          echo "keepalive commit pushed for ${today}"
