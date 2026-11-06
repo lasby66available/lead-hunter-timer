@@ -45,3 +45,11 @@ POST /repos/lasby66available/lead-hunter-timer/actions/workflows/trigger.yml/dis
 
 > 本地备份与维护说明见 `overseas-lead-hunter/tools/timer-workflow.yml`，
 > 完整方案见 `overseas-lead-hunter/docs/punctual-setup.md`。
+
+## 保活（防止 60 天后自动停摆）
+
+GitHub 会在仓库连续 60 天无活动后自动禁用 。本 workflow 最后一步
+每天往  写一行日期（一天最多一个 commit，），
+保证仓库始终有活动，无需人工维护。文件日期停更即代表保活失败，需要手动 push 一次。
+
+> 触发动作排在 checkout 与保活之前，准点优先；保活失败不影响当天日报。
