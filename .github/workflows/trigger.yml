@@ -1,0 +1,64 @@
+# 08:00（北京时间）云端定时器
+#
+# 这个文件实际部署在公开仓库 lasby66available/lead-hunter-timer 的
+# .github/workflows/trigger.yml，本地这份是备份/便于维护。
+#
+# 为什么单独建一个公开仓库：
+#   GitHub 对「私有仓库」的 schedule 会延迟数小时（实测 11-03~11-05
+#   配的是 UTC 00:00，实际被排到 UTC 05:19~07:55 才补跑）。公开仓库的
+#   定时任务优先级更高。这个仓库不含任何客户数据，只放一个触发动作。
+#
+# 为什么有 :58 这个提前点：
+#   UTC 00:00 是 GitHub 全局最拥堵的分钟。提前 2 分钟启动、sleep 到
+#   整点再按按钮，比整点去挤队列准得多。后面几个点是兜底：
+#   万一 GitHub 还是延迟，任何一次跑起来都会立即补发（不会重复，
+#   私有仓库 daily.yml 里有「今天送达过就 20 秒退出」的闸门）。
+name: 08:00 Daily Trigger
+
+on:
+  schedule:
+    - cron: '58 23 * * *'   # 北京 07:58 预启动，sleep 到 08:00
+    - cron: '0 0 * * *'     # 北京 08:00 整点
+    - cron: '3 0 * * *'     # 北京 08:03 兜底
+    - cron: '8 0 * * *'     # 北京 08:08 兜底
+    - cron: '15 0 * * *'    # 北京 08:15 兜底
+  workflow_dispatch:        # 手动测试 / 临时补发
+
+permissions:
+  contents: read
+
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    steps:
+      # 只在定时触发时等待；手动触发立即执行。
+      # 最多等 180 秒：超过说明 GitHub 已经调度延迟了，立刻补发更重要。
+      - name: Wait until 08:00 Asia/Shanghai
+        if: github.event_name == 'schedule'
+        run: |
+          now=$(date -u +%s)
+          target=$(date -u -d "$(date -u +%Y-%m-%d) 00:00:00" +%s)
+          if [ "$target" -le "$now" ]; then target=$((target + 86400)); fi
+          wait=$((target - now))
+          if [ "$wait" -gt 180 ]; then wait=0; fi
+          echo "UTC now=$(date -u +%H:%M:%S), waiting ${wait}s"
+          if [ "$wait" -gt 0 ]; then sleep "$wait"; fi
+
+      - name: Dispatch private daily.yml
+        env:
+          DISPATCH_TOKEN: ${{ secrets.DISPATCH_TOKEN }}
+        run: |
+          code=$(curl -sS -o /tmp/dispatch_resp.txt -w "%{http_code}" -X POST \
+            -H "Authorization: Bearer ${DISPATCH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            -H "Content-Type: application/json" \
+            "https://api.github.com/repos/lasby66available/overseas-lead-hunter/actions/workflows/daily.yml/dispatches" \
+            -d '{"ref":"main","inputs":{}}')
+          echo "dispatch HTTP ${code}"
+          cat /tmp/dispatch_resp.txt || true
+          if [ "${code}" != "204" ]; then
+            echo "::error::dispatch failed with HTTP ${code}"
+            exit 1
+          fi
+          echo "OK: daily.yml queued at $(date -u +%H:%M:%S) UTC"
