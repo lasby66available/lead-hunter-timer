@@ -30,6 +30,14 @@ GitHub Actions 的 `schedule` 对私有仓库会明显延迟（实测配置 UTC 
 以 `PyNaCl SealedBox` 加密后存放，只在 workflow 运行时注入环境变量，
 不出现在日志和代码里。
 
+## 保活（防止 60 天后自动停摆）
+
+GitHub 会在仓库连续 60 天无活动后自动禁用 `schedule`。本 workflow 最后一步
+每天往 `LAST_RUN.txt` 写一行日期（一天最多一个 commit，`continue-on-error`），
+保证仓库始终有活动，无需人工维护。文件日期停更即代表保活失败，需要手动 push 一次。
+
+触发动作排在 checkout 与保活之前，准点优先；保活失败不影响当天日报。
+
 ## 手动测试
 
 在 Actions 页对 `08:00 Daily Trigger` 点 `Run workflow`，
@@ -45,11 +53,3 @@ POST /repos/lasby66available/lead-hunter-timer/actions/workflows/trigger.yml/dis
 
 > 本地备份与维护说明见 `overseas-lead-hunter/tools/timer-workflow.yml`，
 > 完整方案见 `overseas-lead-hunter/docs/punctual-setup.md`。
-
-## 保活（防止 60 天后自动停摆）
-
-GitHub 会在仓库连续 60 天无活动后自动禁用 。本 workflow 最后一步
-每天往  写一行日期（一天最多一个 commit，），
-保证仓库始终有活动，无需人工维护。文件日期停更即代表保活失败，需要手动 push 一次。
-
-> 触发动作排在 checkout 与保活之前，准点优先；保活失败不影响当天日报。
