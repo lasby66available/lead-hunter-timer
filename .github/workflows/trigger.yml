@@ -1,54 +1,124 @@
-# 08:00（北京时间）云端定时器
+# 08:00（北京时间）云端定时器 —— 提前唤醒 + 睡到整点
 #
-# 这个文件实际部署在公开仓库 lasby66available/lead-hunter-timer 的
-# .github/workflows/trigger.yml，本地这份是备份/便于维护。
+# 实际部署在公开仓库 lasby66available/lead-hunter-timer 的
+# .github/workflows/trigger.yml；本地这份是备份，改完必须同步过去。
+# 该仓库不含任何客户数据，只放触发动作和一个保活文件。
 #
-# 为什么单独建一个公开仓库：
-#   GitHub 对「私有仓库」的 schedule 会延迟数小时（实测 11-03~11-05
-#   配的是 UTC 00:00，实际被排到 UTC 05:19~07:55 才补跑）。公开仓库的
-#   定时任务优先级更高。这个仓库不含任何客户数据，只放一个触发动作。
+# ── 为什么不再只靠 08:00 附近的 cron（2026-11-08 实测）────────────
+#   GitHub 的 schedule 是 best-effort，公开仓库同样会严重延迟：
+#     11-07 配 UTC 23:58 / 00:00 / 00:03 / 00:08 / 00:15，
+#           实际跑在 UTC 04:28 / 04:49 / 05:45 / 05:50 / 05:53
+#           （北京 12:28~13:53，晚 4.5~6 小时）
+#     11-08 到北京 09:47 为止，当天 0 次 run
+#   UTC 00:00 前后是 GitHub 全站最拥堵的时段，延迟是以「小时」计的，
+#   不是几分钟。在 08:00 附近多排几个点，只是把「一起迟到」变成
+#   「一起更晚」，治不了本。
 #
-# 为什么有 :58 这个提前点：
-#   UTC 00:00 是 GitHub 全局最拥堵的分钟。提前 2 分钟启动、sleep 到
-#   整点再按按钮，比整点去挤队列准得多。后面几个点是兜底：
-#   万一 GitHub 还是延迟，任何一次跑起来都会立即补发（不会重复，
-#   私有仓库 daily.yml 里有「今天送达过就 20 秒退出」的闸门）。
-name: 08:00 Daily Trigger
+# ── 新办法：躲开高峰，提前几小时占好 runner，睡到 08:00 再按按钮 ──
+#   前一天 UTC 18:00~23:52 安排若干「提前唤醒点」，每个 job 启动后
+#   计算「距离下一个 UTC 00:00（北京 08:00）还有多久」，分段 sleep 到点，
+#   再调用私有仓库 daily.yml 的 workflow_dispatch。
+#   这样：
+#     · runner 提前几小时就占好了，不再需要 08:00 那一刻去挤队列
+#     · dispatch 是一次瞬时 API 调用，08:00:00 就能把按钮按下去
+#     · 即使 GitHub 把唤醒点延迟 4~5 小时，只要仍落在 UTC 18:00~23:59，
+#       job 依然会睡到 00:00 准点触发 —— 调度延迟被 sleep 吃掉了
+#     · 若延迟到 00:00 之后才启动，则立刻补发（迟到总比不发好）
+#   公开仓库的 Actions 分钟数免费且不限量，长时间 sleep 没有成本问题；
+#   单次等待上限 5h50m，给 6 小时 job 上限留足余量。
+#
+# ── 多个唤醒点同时 dispatch 会不会发两封日报 ─────────────────────
+#   不会。私有仓库 daily.yml 有「今天送达过就 20 秒退出」的闸门，
+#   读的是远端最新 leads.db；同时它的 concurrency 组会把重复 run 串行化，
+#   只有第一个真正发信，其余在闸门处秒退。
+#
+# ── 保活 ──────────────────────────────────────────────────────
+#   GitHub 会在仓库连续 60 天无活动后静默禁用 schedule。
+#   每天写一行 LAST_RUN.txt，保证定时任务不会哪天自己停掉。
+name: 08:00 Daily Trigger（提前唤醒）
 
 on:
   schedule:
-    - cron: '58 23 * * *'   # 北京 07:58 预启动，sleep 到 08:00
-    - cron: '0 0 * * *'     # 北京 08:00 整点
-    - cron: '3 0 * * *'     # 北京 08:03 兜底
-    - cron: '8 0 * * *'     # 北京 08:08 兜底
-    - cron: '15 0 * * *'    # 北京 08:15 兜底
-  workflow_dispatch:        # 手动测试 / 临时补发
+    # ── 提前唤醒点：全部避开 :00，且都在 UTC 00:00 之前的低峰时段 ──
+    #   越早的点越能扛住 GitHub 的小时级延迟；越晚的点越可能在 08:00
+    #   前几分钟稳稳占住 runner。两者都要有。
+    #   最早只到 19:07（睡 4h53m）：再早就逼近 6 小时 job 上限，
+    #   一旦撞上等待安全阀就会「不等了立刻发」，反而把日报提前到凌晨。
+    - cron: '7 19 * * *'    # UTC 19:07 → 睡 4h53m
+    - cron: '13 20 * * *'   # UTC 20:13 → 睡 3h47m
+    - cron: '19 22 * * *'   # UTC 22:19 → 睡 1h41m
+    - cron: '37 23 * * *'   # UTC 23:37 → 睡 23m
+    - cron: '52 23 * * *'   # UTC 23:52 → 睡 8m（最可能准点命中）
+    # ── 迟到兜底：00:00 之后才启动就立刻补发 ──
+    - cron: '3 0 * * *'
+    - cron: '15 0 * * *'
+    - cron: '40 1 * * *'
+  workflow_dispatch:        # 手动测试 / 临时补发（不等待，立即 dispatch）
 
-# contents: write 只用于最后的「保活提交」，作用域仅限这个公开空仓库。
-# GitHub 会在仓库连续 60 天无活动后自动禁用 schedule；每天写一行日期，
-# 就能保证定时任务不会被静默停掉。
+# contents: write 只用于最后的保活提交，作用域仅限这个公开空仓库。
 permissions:
   contents: write
 
 jobs:
   trigger:
     runs-on: ubuntu-latest
+    # 默认就是 360 分钟，显式写出来是为了提醒：上面有近 6 小时的等待。
+    timeout-minutes: 360
     steps:
       # 只在定时触发时等待；手动触发立即执行。
-      # 最多等 180 秒：超过说明 GitHub 已经调度延迟了，立刻补发更重要。
-      - name: Wait until 08:00 Asia/Shanghai
+      - name: 睡到 UTC 00:00（北京 08:00）
+        id: wake
         if: github.event_name == 'schedule'
         run: |
+          set -e
+          skip=false
           now=$(date -u +%s)
-          target=$(date -u -d "$(date -u +%Y-%m-%d) 00:00:00" +%s)
-          if [ "$target" -le "$now" ]; then target=$((target + 86400)); fi
+          hour=$((10#$(date -u +%H)))
+          today0=$(date -u -d "$(date -u +%Y-%m-%d) 00:00:00" +%s)
+
+          if [ "$hour" -ge 18 ]; then
+            # 现在是前一天傍晚/夜里 → 目标是「明天」的 UTC 00:00。
+            # 用纯算术加 86400，别写 "+1 day"：GNU date 会把 "+1"
+            # 当成时区偏移解析，算出 23:00 这种莫名其妙的结果。
+            target=$((today0 + 86400))
+          else
+            # 00:00 已过（调度迟到了），或离整点太远 → 立刻补发。
+            # 绝不能把 target 推到「明天的 00:00」再睡 24 小时：
+            # 那会直接撞上 6 小时 job 上限，按钮永远按不下去。
+            target=$now
+          fi
+
           wait=$((target - now))
-          if [ "$wait" -gt 180 ]; then wait=0; fi
-          echo "UTC now=$(date -u +%H:%M:%S), waiting ${wait}s"
-          if [ "$wait" -gt 0 ]; then sleep "$wait"; fi
+          if [ "$wait" -lt 0 ]; then wait=0; fi
+
+          echo "UTC now=$(date -u +%H:%M:%S) / target=$(date -u -d @${target} +%Y-%m-%dT%H:%M:%SZ) / wait=${wait}s"
+
+          # 距离目标太远（>5h50m）说明这个点太早，撞上 6 小时 job 上限。
+          # 绝不能退化成「立刻 dispatch」—— 那会在凌晨把日报提前发出去，
+          # 闸门看到的是新的一天、还没发过，会真的发一封。
+          # 正确做法是本点直接放弃，把机会留给后面更晚的唤醒点。
+          if [ "$wait" -gt 21000 ]; then
+            echo "::notice::距离 UTC 00:00 还有 ${wait}s，超出等待上限，本唤醒点不触发"
+            skip=true
+          fi
+          echo "skip=$skip" >> "$GITHUB_OUTPUT"
+          if [ "$skip" = "true" ]; then exit 0; fi
+
+          # 分段 sleep，每 10 分钟打一次心跳，避免长时间无输出。
+          remaining=$wait
+          while [ "$remaining" -gt 0 ]; do
+            chunk=$remaining
+            if [ "$chunk" -gt 600 ]; then chunk=600; fi
+            sleep "$chunk"
+            remaining=$((remaining - chunk))
+            echo "  等待中：还剩 ${remaining}s（$(date -u +%H:%M:%S) UTC）"
+          done
+          echo "唤醒于 $(date -u +%Y-%m-%dT%H:%M:%SZ)，立即 dispatch"
 
       # 按按钮放在最前面：准点优先，保活之类的杂事都排在它后面。
+      # 手动触发时 wake 步骤被跳过 → outputs.skip 为空 → 条件成立，立即执行。
       - name: Dispatch private daily.yml
+        if: steps.wake.outputs.skip != 'true'
         env:
           DISPATCH_TOKEN: ${{ secrets.DISPATCH_TOKEN }}
         run: |
@@ -65,7 +135,7 @@ jobs:
             echo "::error::dispatch failed with HTTP ${code}"
             exit 1
           fi
-          echo "OK: daily.yml queued at $(date -u +%H:%M:%S) UTC"
+          echo "OK: daily.yml queued at $(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
       - name: Checkout
         uses: actions/checkout@v4
@@ -85,5 +155,8 @@ jobs:
           printf '%s\n' "${today}" > LAST_RUN.txt
           git add LAST_RUN.txt
           git commit -m "chore: keep schedule alive ${today}" || exit 0
-          git push
+          # 多个唤醒点可能同时走到这里，push 撞车很正常，重取一次再提交。
+          git push || { git fetch origin main -q && git reset origin/main && \
+            printf '%s\n' "${today}" > LAST_RUN.txt && git add LAST_RUN.txt && \
+            git commit -m "chore: keep schedule alive ${today}" && git push; }
           echo "keepalive commit pushed for ${today}"
